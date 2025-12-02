@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-multipart
+sqlalchemy
+psycopg2-binary
+geoalchemy2
+earthengine-api
+geemap
+numpy
+pandas
+scipy
+fpdf
+shapely
+geopandas
+plotly
+rasterio

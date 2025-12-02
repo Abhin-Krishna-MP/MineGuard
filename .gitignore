@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+venv/
+myenv/
+backend/gee-key.json
+backend/static/outputs/
+backend/static/uploads/
+node_modules/
+dist/
+.DS_Store

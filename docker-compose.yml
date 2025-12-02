@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # 1. THE DATABASE
+  db:
+    image: postgis/postgis
+    container_name: mineguard-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mining_secret
+      - POSTGRES_DB=mineguard
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  # 2. THE BACKEND API
+  backend:
+    build: ./backend
+    container_name: mineguard-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    environment:
+      # Connects to the 'db' service defined above
+      - DATABASE_URL=postgresql://postgres:mining_secret@db:5432/mineguard
+      # Pass your GEE Project ID if needed, or rely on pasted key file
+      - GOOGLE_CLOUD_PROJECT=minesector
+    volumes:
+      # Persist generated reports even if container restarts
+      - ./backend/static:/app/static
+      # Pass GEE credentials (optional, if using key file)
+      # - ~/.config/earthengine:/root/.config/earthengine 
+
+  # 3. THE FRONTEND DASHBOARD
+  frontend:
+    build: ./frontend
+    container_name: mineguard-ui
+    ports:
+      - "3000:80" # Map localhost:3000 to container:80
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
