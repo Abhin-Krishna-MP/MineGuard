@@ -26,12 +26,19 @@ services:
     environment:
       # Connects to the 'db' service defined above
       - DATABASE_URL=postgresql://postgres:mining_secret@db:5432/mineguard
-      # Pass your GEE Project ID if needed, or rely on pasted key file
       - GOOGLE_CLOUD_PROJECT=minesector
+      
+      # --- CRITICAL CONFIGURATION ---
+      # For Localhost (Development):
+      - API_PUBLIC_URL=http://localhost:8000
+      
+      # For AWS / Cloud (Production) - UNCOMMENT AND EDIT THIS LINE ON SERVER:
+      # - API_PUBLIC_URL=http://13.61.145.193:8000
+      
     volumes:
       # Persist generated reports even if container restarts
       - ./backend/static:/app/static
-      # Pass GEE credentials (optional, if using key file)
+      # Pass GEE credentials if using local mounting method
       # - ~/.config/earthengine:/root/.config/earthengine 
 
   # 3. THE FRONTEND DASHBOARD

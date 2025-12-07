@@ -8,6 +8,10 @@ function App() {
   const [report, setReport] = useState(null);
   const [history, setHistory] = useState([]);
   
+  // DATE PICKER STATE
+  const [startDate, setStartDate] = useState("2024-01-01");
+  const [endDate, setEndDate] = useState("2024-04-30");
+
   // NEW: State to control which view is active (3D, 2D, or PDF)
   const [activeView, setActiveView] = useState('3d'); 
 
@@ -20,8 +24,6 @@ function App() {
       const data = await fetchHistory();
       // Automatically select the most recent report if available
       if (data && data.length > 0) {
-        // We need to reshape the history item to match the 'report' structure expected by the UI
-        // or just setHistory and let the user click. Let's just load history list.
         setHistory(data);
       }
     } catch (error) {
@@ -39,7 +41,8 @@ function App() {
     setReport(null);
     
     try {
-      const result = await uploadFile(file);
+      // Pass dates to upload function
+      const result = await uploadFile(file, startDate, endDate);
       setReport(result);
       loadHistory(); 
     } catch (error) {
@@ -100,6 +103,7 @@ function App() {
               <Upload size={16} className="text-cyan-400"/> New Analysis
             </h2>
             
+            {/* FILE DROP ZONE */}
             <div className="border-2 border-dashed border-slate-600 rounded-lg p-6 text-center hover:border-cyan-500 hover:bg-slate-800 transition-all group">
               <input type="file" onChange={handleFileChange} className="hidden" id="fileInput" />
               <label htmlFor="fileInput" className="cursor-pointer flex flex-col items-center">
@@ -108,6 +112,28 @@ function App() {
                   {file ? <span className="text-cyan-400 font-bold">{file.name}</span> : "Drag KML/Shapefile here"}
                 </span>
               </label>
+            </div>
+
+            {/* --- DATE PICKER SECTION (ADDED HERE) --- */}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-slate-400 font-medium ml-1">Start Date</label>
+                <input 
+                  type="date" 
+                  value={startDate} 
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-md p-2 text-xs text-white focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 font-medium ml-1">End Date</label>
+                <input 
+                  type="date" 
+                  value={endDate} 
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-600 rounded-md p-2 text-xs text-white focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
             </div>
 
             <button 

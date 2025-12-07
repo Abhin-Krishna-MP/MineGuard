@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -16,7 +16,11 @@ from models import Inspection
 
 app = FastAPI(title="MineGuard Enterprise API")
 
-# Setup CORS & Directories
+# --- CONFIGURATION ---
+# Get public URL from environment or default to localhost
+API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "http://localhost:8000")
+
+# Setup CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,28 +29,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Setup Directories
 UPLOAD_DIR = "static/uploads"
 OUTPUT_DIR = "static/outputs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Mount Static Files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def home():
-    return {"status": "MineGuard System v2.0 Online"}
+    return {"status": "MineGuard System v2.0 Online", "public_url": API_PUBLIC_URL}
 
 @app.post("/api/analyze")
-async def analyze_mining_site(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def analyze_mining_site(
+    file: UploadFile = File(...), 
+    db: Session = Depends(get_db),
+    start_date: str = Form("2024-01-01"),
+    end_date: str = Form("2024-04-30")
+):
     """
     Analyzes the file AND saves the result to the PostgreSQL Database.
     """
     job_id = str(uuid.uuid4())[:8]
     user_filename = file.filename
-    safe_filename = f"{job_id}_{user_filename}"
+    # Sanitize filename
+    safe_filename = f"{job_id}_{user_filename.replace(' ', '_')}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
     
-    print(f"📥 Processing Job: {job_id}")
+    print(f"📥 Processing Job: {job_id} | File: {user_filename}")
 
     # 1. Save & Process File
     try:
@@ -54,7 +66,8 @@ async def analyze_mining_site(file: UploadFile = File(...), db: Session = Depend
             shutil.copyfileobj(file.file, buffer)
         lease_geojson = process_lease_file(file_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File Error: {e}")
+        print(f"❌ File Error: {e}")
+        raise HTTPException(status_code=500, detail=f"File Error: {str(e)}")
 
     # 2. Run AI Engine
     try:
@@ -63,14 +76,21 @@ async def analyze_mining_site(file: UploadFile = File(...), db: Session = Depend
         result = run_unified_detection(
             lease_geojson, 
             filename=user_filename,
-            output_dir=job_output_dir
+            output_dir=job_output_dir,
+            start_date=start_date,
+            end_date=end_date
         )
         
         metrics = result["metrics"]
         artifacts = result.get("artifacts", {})
         
         # 3. SAVE TO DATABASE
-        base_url = "http://localhost:8000"
+        # Construct URLs using the dynamic API_PUBLIC_URL
+        url_report = f"{API_PUBLIC_URL}/static/outputs/{job_id}/{artifacts.get('report_url')}"
+        url_map = f"{API_PUBLIC_URL}/static/outputs/{job_id}/{artifacts.get('map_url')}"
+        url_model = None
+        if artifacts.get('model_url'):
+            url_model = f"{API_PUBLIC_URL}/static/outputs/{job_id}/{artifacts.get('model_url')}"
         
         new_inspection = Inspection(
             job_id=job_id,
@@ -80,9 +100,9 @@ async def analyze_mining_site(file: UploadFile = File(...), db: Session = Depend
             avg_depth_m=metrics["avg_depth_m"],
             truckloads=metrics["truckloads"],
             status=result["status"],
-            report_url=f"{base_url}/static/outputs/{job_id}/{artifacts.get('report_url')}",
-            map_url=f"{base_url}/static/outputs/{job_id}/{artifacts.get('map_url')}",
-            model_url=f"{base_url}/static/outputs/{job_id}/{artifacts.get('model_url')}" if artifacts.get("model_url") else None
+            report_url=url_report,
+            map_url=url_map,
+            model_url=url_model
         )
         
         db.add(new_inspection)
@@ -90,11 +110,19 @@ async def analyze_mining_site(file: UploadFile = File(...), db: Session = Depend
         db.refresh(new_inspection)
         print(f"💾 Saved to Database: Inspection ID {new_inspection.id}")
 
+        # Return result with correct URLs
+        result["urls"] = {
+            "report": url_report,
+            "map": url_map,
+            "3d_model": url_model
+        }
+
         return result
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        print(f"❌ Pipeline Error: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline Error: {str(e)}")
 
 @app.get("/api/history")
