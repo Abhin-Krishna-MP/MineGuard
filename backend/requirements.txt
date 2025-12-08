@@ -14,3 +14,9 @@ shapely
 geopandas
 plotly
 rasterio
+# --- AI Dependencies ---
+torch
+segmentation-models-pytorch
+opencv-python-headless
+numpy
+matplotlib

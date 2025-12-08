@@ -2,6 +2,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from ai_inference import MineSegmenter
+
 import shutil
 import os
 import uuid
@@ -16,8 +18,12 @@ from models import Inspection
 
 app = FastAPI(title="MineGuard Enterprise API")
 
+@app.on_event("startup")
+async def startup_event():
+    print("🧠 Initializing Neural Network...")
+    MineSegmenter()
+
 # --- CONFIGURATION ---
-# Get public URL from environment or default to localhost
 API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "http://localhost:8000")
 
 # Setup CORS
@@ -73,6 +79,7 @@ async def analyze_mining_site(
     try:
         job_output_dir = os.path.join(OUTPUT_DIR, job_id)
         
+        # Now calls the updated Unified Detection Logic
         result = run_unified_detection(
             lease_geojson, 
             filename=user_filename,
@@ -85,7 +92,6 @@ async def analyze_mining_site(
         artifacts = result.get("artifacts", {})
         
         # 3. SAVE TO DATABASE
-        # Construct URLs using the dynamic API_PUBLIC_URL
         url_report = f"{API_PUBLIC_URL}/static/outputs/{job_id}/{artifacts.get('report_url')}"
         url_map = f"{API_PUBLIC_URL}/static/outputs/{job_id}/{artifacts.get('map_url')}"
         url_model = None
@@ -110,7 +116,6 @@ async def analyze_mining_site(
         db.refresh(new_inspection)
         print(f"💾 Saved to Database: Inspection ID {new_inspection.id}")
 
-        # Return result with correct URLs
         result["urls"] = {
             "report": url_report,
             "map": url_map,

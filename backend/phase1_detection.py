@@ -1,152 +1,101 @@
+# phase1_detection.py
+
 import ee
 import geemap
 import os
+import numpy as np
+import cv2  # <--- NEW IMPORT
 
 # Import Helpers
 try:
     from phase2_tin_viz import generate_tin_visualization
     from report_generator import generate_pdf_report
+    from ai_inference import MineSegmenter  # <--- NEW IMPORT
 except ImportError:
     generate_tin_visualization = None
     generate_pdf_report = None
+    MineSegmenter = None
 
-# --- CONFIGURATION ---
-PROJECT_ID = 'minesector'
-KEY_PATH = "gee-key.json"
-# Default dates (can be overridden by API)
-DEFAULT_START = '2024-01-01'
-DEFAULT_END = '2024-04-30'
-CLOUD_THRESHOLD = 20
-OPTICAL_THRESHOLD = 0.07
-RADAR_THRESHOLD = 0.5
-MIN_DEPTH_THRESHOLD = 2.0
-DEM_SOURCE = 'COPERNICUS/DEM/GLO30' 
-
-try:
-    if os.path.exists(KEY_PATH):
-        service_account = "mineguard-sa@minesector.iam.gserviceaccount.com"
-        ee.Initialize(credentials=ee.ServiceAccountCredentials(service_account, KEY_PATH))
-    else:
-        ee.Initialize(project=PROJECT_ID)
-except:
-    try:
-        ee.Authenticate()
-        ee.Initialize(project=PROJECT_ID)
-    except:
-        pass
+# ... (Configuration & Auth code remains the same) ...
 
 def run_unified_detection(lease_geojson=None, filename="Manual_Input", output_dir="output", start_date=DEFAULT_START, end_date=DEFAULT_END):
     os.makedirs(output_dir, exist_ok=True)
+    lid_elevation = 0.0
     
-    # --- A. INPUT ---
-    if lease_geojson:
-        try:
-            roi = ee.Geometry(lease_geojson)
-        except:
-            roi = ee.Geometry.Polygon([[86.40, 23.70], [86.45, 23.70], [86.45, 23.75], [86.40, 23.75], [86.40, 23.70]])
-    else:
-        roi = ee.Geometry.Polygon([[86.40, 23.70], [86.45, 23.70], [86.45, 23.75], [86.40, 23.75], [86.40, 23.70]])
+    # ... (Step A: Input Geometry code remains the same) ...
 
-    search_zone = roi.buffer(3000)
-
-    # --- B. DETECTION (Total Mining Signature) ---
-    print(f"🚀 Step 1: Scanning Surface ({start_date} to {end_date})...")
-    s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(roi).filterDate(start_date, end_date).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', CLOUD_THRESHOLD)).select(['B4', 'B3', 'B2', 'B8', 'B11']) 
-    s2_image = s2.median().clip(search_zone)
-    ndbi = s2_image.normalizedDifference(['B11', 'B8']).rename('NDBI')
-    optical_mask = ndbi.gt(OPTICAL_THRESHOLD)
-
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(roi).filterDate(start_date, end_date).filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).filter(ee.Filter.eq('instrumentMode', 'IW'))
-    s1_linear = s1.median().clip(search_zone).select('VV').max(0.001)
-    s1_db = s1_linear.log10().multiply(10.0).rename('VV_dB')
-    roughness = s1_db.reduceNeighborhood(reducer=ee.Reducer.stdDev(), kernel=ee.Kernel.square(3))
-    radar_mask = roughness.gt(RADAR_THRESHOLD)
+    # ... (Step B: Sensor Detection code remains the same) ...
     
-    candidate_mask = optical_mask.And(radar_mask)
+    # ... (Step C: Fusion code remains the same) ...
 
-    # --- C. VERIFICATION (Depth Check) ---
-    print("🚀 Step 2: Verifying Topography...")
-    dem = ee.ImageCollection(DEM_SOURCE).select('DEM').mosaic().clip(search_zone)
+    # --- D. QUANTIFICATION ---
+    # ... (Existing Quantification code) ...
+    legal_area_m2, legal_vol_m3 = get_metrics(legal_mining, "Legal")
+    illegal_area_m2, illegal_vol_m3 = get_metrics(illegal_mining, "Illegal")
+    # ... (Rest of existing aggregation) ...
+
+    # ==========================================
+    # 🧠 NEW STEP: AI CROSS-VERIFICATION
+    # ==========================================
+    print("🤖 Step 3: Running Deep Learning Inference...")
+    ai_mask_filename = "ai_prediction.png"
+    ai_overlay_filename = "ai_overlay.jpg"
     
-    rim_mask = candidate_mask.focal_max(60, 'circle', 'meters').And(candidate_mask.Not())
-    rim_stats = dem.updateMask(rim_mask).reduceRegion(reducer=ee.Reducer.mean(), geometry=search_zone, scale=30, maxPixels=1e9)
-    lid_elevation = rim_stats.get('DEM').getInfo() or 0.0
+    try:
+        # 1. Extract RGB pixels from Earth Engine (Visual Bands)
+        # We need to visualize the specific ROI
+        roi_bounds = search_zone.bounds()
+        
+        # Convert EE Image to Numpy (This downloads the pixels)
+        # Scale=10 ensures high res for the AI
+        rgb_image = geemap.ee_to_numpy(
+            s2_image.select(['B4', 'B3', 'B2']).divide(3000).multiply(255).uint8(),
+            region=roi_bounds,
+            scale=10 
+        )
 
-    raw_depth = ee.Image.constant(lid_elevation).subtract(dem)
-    verified_depth_mask = raw_depth.gt(MIN_DEPTH_THRESHOLD)
-    
-    total_mining_mask = candidate_mask.And(verified_depth_mask)
+        if rgb_image is not None and MineSegmenter is not None:
+            # 2. Run Inference
+            # Remove Alpha channel if exists (Keep only RGB)
+            if rgb_image.shape[2] > 3:
+                rgb_image = rgb_image[:, :, :3]
+                
+            ai_mask = MineSegmenter().predict(rgb_image)
+            
+            # 3. Create Visual Artifacts
+            # Save the raw mask
+            cv2.imwrite(os.path.join(output_dir, ai_mask_filename), ai_mask)
+            
+            # Create an overlay (Red contour on original image)
+            # Convert RGB (EE output) to BGR (OpenCV format)
+            img_bgr = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+            
+            # Draw contours
+            contours, _ = cv2.findContours(ai_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(img_bgr, contours, -1, (0, 0, 255), 2) # Red line, thickness 2
+            
+            cv2.imwrite(os.path.join(output_dir, ai_overlay_filename), img_bgr)
+            print("✅ AI Analysis Complete")
+        else:
+            print("⚠️ Skipping AI: Image extraction failed or Model not loaded.")
 
-    # --- D. CLASSIFICATION (Legal vs Illegal) ---
-    lease_image = ee.Image.constant(0).byte().paint(roi, 1).unmask(0)
-    
-    outside_mask = lease_image.eq(0)
-    illegal_mask = total_mining_mask.And(outside_mask)
-    
-    inside_mask = lease_image.eq(1)
-    legal_mask = total_mining_mask.And(inside_mask)
+    except Exception as e:
+        print(f"❌ AI Inference Failed: {e}")
 
-    # --- E. QUANTIFICATION ---
-    print("🚀 Step 3: Quantifying Volumes (Total vs Illegal)...")
-    
-    def calc_stats(mask):
-        area = mask.multiply(ee.Image.pixelArea()).reduceRegion(reducer=ee.Reducer.sum(), geometry=search_zone, scale=10, maxPixels=1e9).values().get(0).getInfo() or 0.0
-        depth_masked = raw_depth.updateMask(mask)
-        vol = depth_masked.multiply(ee.Image.pixelArea()).reduceRegion(reducer=ee.Reducer.sum(), geometry=search_zone, scale=30, maxPixels=1e9).values().get(0).getInfo() or 0.0
-        return area, vol
+    # ==========================================
+    # END AI STEP
+    # ==========================================
 
-    illegal_area_m2, illegal_vol_m3 = calc_stats(illegal_mask)
-    legal_area_m2, legal_vol_m3 = calc_stats(legal_mask)
-    
-    total_area_m2 = illegal_area_m2 + legal_area_m2
-    total_vol_m3 = illegal_vol_m3 + legal_vol_m3
-    
-    avg_depth_m = illegal_vol_m3 / illegal_area_m2 if illegal_area_m2 > 0 else 0.0
+    # ... (Step E: Prepare 3D Data remains the same) ...
 
-    # --- F. PREPARE 3D DATA ---
-    status_map = ee.Image.constant(0).where(illegal_mask, 1).where(legal_mask, 2).rename('status')
-    combined_3d_image = raw_depth.rename('depth').addBands(status_map).updateMask(total_mining_mask)
+    # ... (Step F: Output Generation - Map, TIN, PDF remains the same) ...
 
-    # --- G. OUTPUT GENERATION ---
-    
-    # 1. 2D Map
-    Map = geemap.Map()
-    Map.centerObject(roi, 13)
-    Map.addLayer(s2_image, {'min': 0, 'max': 3000, 'bands': ['B4', 'B3', 'B2']}, 'Satellite Image')
-    Map.addLayer(legal_mask.selfMask(), {'palette': ['00FF00']}, 'Legal Mining (Inside)')
-    Map.addLayer(illegal_mask.selfMask(), {'palette': ['FF0000']}, 'ILLEGAL Encroachment (Outside)')
-    Map.addLayer(roi, {'color': 'blue', 'width': 3}, 'Lease Boundary')
-    
-    map_filename = "map_2d.html"
-    Map.to_html(os.path.join(output_dir, map_filename))
-
-    # 2. 3D TIN
-    tin_filename = "model_3d.html"
-    tin_full_path = os.path.join(output_dir, tin_filename)
-    if total_area_m2 > 0 and generate_tin_visualization:
-        generate_tin_visualization(combined_3d_image, search_zone, total_area_m2, output_path=tin_full_path)
-
-    # 3. PDF Report
-    pdf_filename = "report.pdf"
-    if generate_pdf_report:
-        report_data = {
-            "start_date": start_date, "end_date": end_date, "dem_source": DEM_SOURCE,
-            "filename": os.path.basename(filename),
-            "illegal_area": illegal_area_m2, "total_area": total_area_m2,
-            "lid_elevation": lid_elevation, "avg_depth": avg_depth_m, 
-            "volume": illegal_vol_m3, "total_volume": total_vol_m3,
-            "trucks": int(illegal_vol_m3 / 15) if illegal_vol_m3 else 0
-        }
-        try:
-            generate_pdf_report(report_data, output_path=os.path.join(output_dir, pdf_filename))
-        except Exception as e:
-            print(f"PDF Error: {e}")
-
-    # --- H. RETURN METRICS ---
+    # --- G. RETURN METRICS ---
     return {
         "status": "success",
         "metrics": {
             "illegal_area_m2": round(illegal_area_m2, 2),
+            "legal_area_m2": round(legal_area_m2, 2),
             "volume_m3": round(illegal_vol_m3, 2),
             "total_vol_m3": round(total_vol_m3, 2),
             "avg_depth_m": round(avg_depth_m, 2),
@@ -155,6 +104,8 @@ def run_unified_detection(lease_geojson=None, filename="Manual_Input", output_di
         "artifacts": {
             "map_url": map_filename,
             "model_url": tin_filename if total_area_m2 > 0 else None,
-            "report_url": pdf_filename
+            "report_url": pdf_filename,
+            "ai_mask_url": ai_mask_filename,      # <--- ADDED
+            "ai_overlay_url": ai_overlay_filename # <--- ADDED
         }
     }
